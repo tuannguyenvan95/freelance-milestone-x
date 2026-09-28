@@ -63,6 +63,7 @@ def test_create_job_success(contract, direct_vm, direct_alice, direct_bob):
     assert job_data["deliverable_url"] == ""
     assert job_data["escrow_amount"] == "10000"
     assert job_data["status"] == "CREATED"
+    assert job_data["payout_tier"] == "NONE"
     assert job_data["completion_percentage"] == "0"
     assert job_data["freelancer_payout"] == "0"
     assert job_data["client_refund"] == "0"
@@ -133,14 +134,13 @@ def test_submit_deliverable_permissions_and_validations(contract, direct_vm, dir
     assert "deliverable_url must begin with http:// or https://" in str(exc.value)
 
 
-def test_adjudicate_full_completion_100_percent(contract, direct_vm, direct_alice, direct_bob):
+def test_adjudicate_full_completion_tier(contract, direct_vm, direct_alice, direct_bob):
     """
-    Scenario 1: AI arbitrator scores 100% completion.
-    Result: 100% payout to Freelancer, 0 refund to Client.
+    Scenario 1: AI arbitrator assigns FULL tier (100% completion).
+    Result: 100% payout (10,000 GEN) to Freelancer, 0 refund to Client.
     """
     setup_post_message_hook(direct_vm)
 
-    # Initial balance tracking
     alice_bytes = direct_vm._to_bytes(direct_alice)
     bob_bytes = direct_vm._to_bytes(direct_bob)
     direct_vm._balances[alice_bytes] = 20000
@@ -155,7 +155,6 @@ def test_adjudicate_full_completion_100_percent(contract, direct_vm, direct_alic
     deliverable_url = "https://milestonex-preview.vercel.app"
     contract.submit_deliverable(job_id, deliverable_url)
 
-    # Mock web rendering of deliverable
     web_body = """
     MilestoneX Live App:
     - Wallet Connect: Integrated with GenLayer testnet and MetaMask.
@@ -165,11 +164,10 @@ def test_adjudicate_full_completion_100_percent(contract, direct_vm, direct_alic
     """
     direct_vm.mock_web("milestonex-preview.vercel.app", {"status": 200, "body": web_body})
 
-    # Mock LLM evaluation
     direct_vm.mock_llm(
         ".*",
         json.dumps({
-            "completion_percentage": 100,
+            "tier": "FULL",
             "confidence": 98,
             "reason": "All 3 criteria (wallet connect, contract form, audit display) fully implemented and live."
         })
@@ -179,6 +177,7 @@ def test_adjudicate_full_completion_100_percent(contract, direct_vm, direct_alic
 
     job_data = json.loads(contract.get_job(job_id))
     assert job_data["status"] == "SETTLED"
+    assert job_data["payout_tier"] == "FULL"
     assert job_data["completion_percentage"] == "100"
     assert job_data["freelancer_payout"] == "10000"
     assert job_data["client_refund"] == "0"
@@ -186,10 +185,10 @@ def test_adjudicate_full_completion_100_percent(contract, direct_vm, direct_alic
     assert direct_vm._balances[bob_bytes] == 10000
 
 
-def test_adjudicate_partial_payout_80_percent(contract, direct_vm, direct_alice, direct_bob):
+def test_adjudicate_substantial_completion_tier(contract, direct_vm, direct_alice, direct_bob):
     """
-    Scenario 2: AI arbitrator scores 80% completion (Partial Payout).
-    Result: 80% payout (8,000 GEN) to Freelancer, 20% refund (2,000 GEN) to Client.
+    Scenario 2: AI arbitrator assigns SUBSTANTIAL tier (75% completion).
+    Result: 75% payout (7,500 GEN) to Freelancer, 25% refund (2,500 GEN) to Client.
     """
     setup_post_message_hook(direct_vm)
 
@@ -219,7 +218,7 @@ def test_adjudicate_partial_payout_80_percent(contract, direct_vm, direct_alice,
     direct_vm.mock_llm(
         ".*",
         json.dumps({
-            "completion_percentage": 80,
+            "tier": "SUBSTANTIAL",
             "confidence": 92,
             "reason": "Hero, pricing, and responsive layout are solid. Dark mode toggle is only partially implemented."
         })
@@ -229,20 +228,102 @@ def test_adjudicate_partial_payout_80_percent(contract, direct_vm, direct_alice,
 
     job_data = json.loads(contract.get_job(job_id))
     assert job_data["status"] == "SETTLED"
-    assert job_data["completion_percentage"] == "80"
-    assert job_data["freelancer_payout"] == "8000"
-    assert job_data["client_refund"] == "2000"
+    assert job_data["payout_tier"] == "SUBSTANTIAL"
+    assert job_data["completion_percentage"] == "75"
+    assert job_data["freelancer_payout"] == "7500"
+    assert job_data["client_refund"] == "2500"
     assert "Dark mode" in job_data["reason"]
 
-    # Verify automatic balance disbursement
-    assert direct_vm._balances[bob_bytes] == 8000
-    assert direct_vm._balances[alice_bytes] == 2000
+    assert direct_vm._balances[bob_bytes] == 7500
+    assert direct_vm._balances[alice_bytes] == 2500
+
+
+def test_adjudicate_partial_completion_tier(contract, direct_vm, direct_alice, direct_bob):
+    """
+    Scenario 3: AI arbitrator assigns PARTIAL tier (50% completion).
+    Result: 50% payout (5,000 GEN) to Freelancer, 50% refund (5,000 GEN) to Client.
+    """
+    setup_post_message_hook(direct_vm)
+
+    alice_bytes = direct_vm._to_bytes(direct_alice)
+    bob_bytes = direct_vm._to_bytes(direct_bob)
+    direct_vm._balances[alice_bytes] = 0
+    direct_vm._balances[bob_bytes] = 0
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = 10000
+    dod = "Develop user authentication, dashboard analytics, and CSV report export."
+    job_id = contract.create_job(direct_bob, dod)
+
+    direct_vm.sender = direct_bob
+    deliverable_url = "https://analytics-dashboard-demo.vercel.app"
+    contract.submit_deliverable(job_id, deliverable_url)
+
+    web_body = "User Auth and Dashboard are live. CSV export is not implemented."
+    direct_vm.mock_web("analytics-dashboard-demo.vercel.app", {"status": 200, "body": web_body})
+    direct_vm.mock_llm(".*", json.dumps({
+        "tier": "PARTIAL",
+        "confidence": 90,
+        "reason": "Auth and dashboard ready, but CSV report export missing."
+    }))
+
+    contract.adjudicate_job(job_id)
+
+    job_data = json.loads(contract.get_job(job_id))
+    assert job_data["status"] == "SETTLED"
+    assert job_data["payout_tier"] == "PARTIAL"
+    assert job_data["completion_percentage"] == "50"
+    assert job_data["freelancer_payout"] == "5000"
+    assert job_data["client_refund"] == "5000"
+    assert direct_vm._balances[bob_bytes] == 5000
+    assert direct_vm._balances[alice_bytes] == 5000
+
+
+def test_adjudicate_minimal_completion_tier(contract, direct_vm, direct_alice, direct_bob):
+    """
+    Scenario 4: AI arbitrator assigns MINIMAL tier (25% completion).
+    Result: 25% payout (2,500 GEN) to Freelancer, 75% refund (7,500 GEN) to Client.
+    """
+    setup_post_message_hook(direct_vm)
+
+    alice_bytes = direct_vm._to_bytes(direct_alice)
+    bob_bytes = direct_vm._to_bytes(direct_bob)
+    direct_vm._balances[alice_bytes] = 0
+    direct_vm._balances[bob_bytes] = 0
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = 10000
+    dod = "Build complete fullstack e-commerce store with catalog, cart, and payment checkout."
+    job_id = contract.create_job(direct_bob, dod)
+
+    direct_vm.sender = direct_bob
+    deliverable_url = "https://shop-prototype.vercel.app"
+    contract.submit_deliverable(job_id, deliverable_url)
+
+    web_body = "Static homepage mockup only. Cart and payment buttons are inactive placeholders."
+    direct_vm.mock_web("shop-prototype.vercel.app", {"status": 200, "body": web_body})
+    direct_vm.mock_llm(".*", json.dumps({
+        "tier": "MINIMAL",
+        "confidence": 85,
+        "reason": "Only static landing page skeleton provided. Cart and checkout not implemented."
+    }))
+
+    contract.adjudicate_job(job_id)
+
+    job_data = json.loads(contract.get_job(job_id))
+    assert job_data["status"] == "SETTLED"
+    assert job_data["payout_tier"] == "MINIMAL"
+    assert job_data["completion_percentage"] == "25"
+    assert job_data["freelancer_payout"] == "2500"
+    assert job_data["client_refund"] == "7500"
+    assert direct_vm._balances[bob_bytes] == 2500
+    assert direct_vm._balances[alice_bytes] == 7500
 
 
 def test_adjudicate_inaccessible_or_404_url(contract, direct_vm, direct_alice, direct_bob):
     """
-    Scenario 3: Deliverable URL returns 404 or is blank.
-    Result: 0% payout to Freelancer, 100% refund (10,000 GEN) to Client.
+    Scenario 5: Deliverable URL returns 404 or is blank.
+    Result: REJECTED tier (0% payout), 100% refund (10,000 GEN) to Client.
     """
     setup_post_message_hook(direct_vm)
 
@@ -260,13 +341,14 @@ def test_adjudicate_inaccessible_or_404_url(contract, direct_vm, direct_alice, d
     deliverable_url = "https://broken-or-offline-domain.com/api"
     contract.submit_deliverable(job_id, deliverable_url)
 
-    # Mock 404 or empty response
+    # Mock 404 response
     direct_vm.mock_web("broken-or-offline-domain.com/api", {"status": 404, "body": "404 Not Found"})
 
     contract.adjudicate_job(job_id)
 
     job_data = json.loads(contract.get_job(job_id))
     assert job_data["status"] == "SETTLED"
+    assert job_data["payout_tier"] == "REJECTED"
     assert job_data["completion_percentage"] == "0"
     assert job_data["freelancer_payout"] == "0"
     assert job_data["client_refund"] == "10000"
@@ -292,7 +374,7 @@ def test_cannot_adjudicate_unsubmitted_or_settled_job(contract, direct_vm, direc
     contract.submit_deliverable(job_id, "https://github.com/org/repo/pull/1")
 
     direct_vm.mock_web("github.com/org/repo/pull/1", {"status": 200, "body": "100% test coverage implemented"})
-    direct_vm.mock_llm(".*", json.dumps({"completion_percentage": 90, "confidence": 90, "reason": "90% coverage achieved"}))
+    direct_vm.mock_llm(".*", json.dumps({"tier": "FULL", "confidence": 95, "reason": "90% coverage achieved"}))
 
     contract.adjudicate_job(job_id)
 
@@ -309,8 +391,8 @@ def test_cannot_adjudicate_unsubmitted_or_settled_job(contract, direct_vm, direc
 
 def test_adjudicate_unrelated_submission_zero_percent(contract, direct_vm, direct_alice, direct_bob):
     """
-    Scenario 4: Freelancer submits an unrelated website (e.g. a recipe blog instead of DeFi protocol).
-    Result: AI arbitrator gives 0% score -> 100% refund to client, 0 to freelancer.
+    Scenario 6: Freelancer submits an unrelated website (e.g. recipe blog instead of DeFi protocol).
+    Result: AI assigns REJECTED tier -> 100% refund to client, 0 to freelancer.
     """
     setup_post_message_hook(direct_vm)
 
@@ -333,7 +415,7 @@ def test_adjudicate_unrelated_submission_zero_percent(contract, direct_vm, direc
         "body": "Welcome to my Italian pasta recipes blog! Here are top 10 pasta sauces."
     })
     direct_vm.mock_llm(".*", json.dumps({
-        "completion_percentage": 0,
+        "tier": "REJECTED",
         "confidence": 100,
         "reason": "Submitted URL is a cooking blog completely unrelated to Uniswap swap routing."
     }))
@@ -342,6 +424,7 @@ def test_adjudicate_unrelated_submission_zero_percent(contract, direct_vm, direc
 
     job_data = json.loads(contract.get_job(job_id))
     assert job_data["status"] == "SETTLED"
+    assert job_data["payout_tier"] == "REJECTED"
     assert job_data["completion_percentage"] == "0"
     assert job_data["freelancer_payout"] == "0"
     assert job_data["client_refund"] == "15000"
@@ -353,9 +436,9 @@ def test_multiple_concurrent_jobs(contract, direct_vm, direct_alice, direct_bob,
     """Verify independent escrow isolation across multiple simultaneous jobs."""
     setup_post_message_hook(direct_vm)
 
-    # Job 1: Alice hires Bob for 5,000 GEN
+    # Job 1: Alice hires Bob for 8,000 GEN
     direct_vm.sender = direct_alice
-    direct_vm.value = 5000
+    direct_vm.value = 8000
     j1 = contract.create_job(direct_bob, "Build frontend UI components in Tailwind CSS.")
 
     # Job 2: Alice hires Charlie for 12,000 GEN
@@ -374,22 +457,24 @@ def test_multiple_concurrent_jobs(contract, direct_vm, direct_alice, direct_bob,
     direct_vm.sender = direct_charlie
     contract.submit_deliverable(j2, "https://github.com/db-org/migrations/pull/1")
 
-    # Adjudicate Job 1 (100% complete)
+    # Adjudicate Job 1 (FULL tier: 100%)
     direct_vm.mock_web("tailwind-ui-components.vercel.app", {"status": 200, "body": "Tailwind UI component library complete"})
-    direct_vm.mock_llm(r".*Tailwind.*", json.dumps({"completion_percentage": 100, "confidence": 95, "reason": "All UI components ready"}))
+    direct_vm.mock_llm(r".*Tailwind.*", json.dumps({"tier": "FULL", "confidence": 95, "reason": "All UI components ready"}))
     contract.adjudicate_job(j1)
 
-    # Adjudicate Job 2 (50% complete)
+    # Adjudicate Job 2 (PARTIAL tier: 50%)
     direct_vm.mock_web("github.com/db-org/migrations/pull/1", {"status": 200, "body": "Partial DB migrations submitted"})
-    direct_vm.mock_llm(r".*migrations.*", json.dumps({"completion_percentage": 50, "confidence": 90, "reason": "Half of migrations done"}))
+    direct_vm.mock_llm(r".*migrations.*", json.dumps({"tier": "PARTIAL", "confidence": 90, "reason": "Half of migrations done"}))
     contract.adjudicate_job(j2)
 
     job1_data = json.loads(contract.get_job(j1))
     job2_data = json.loads(contract.get_job(j2))
 
-    assert job1_data["freelancer_payout"] == "5000"
+    assert job1_data["payout_tier"] == "FULL"
+    assert job1_data["freelancer_payout"] == "8000"
     assert job1_data["client_refund"] == "0"
 
+    assert job2_data["payout_tier"] == "PARTIAL"
     assert job2_data["freelancer_payout"] == "6000"
     assert job2_data["client_refund"] == "6000"
 
@@ -400,3 +485,35 @@ def test_get_nonexistent_job_raises_error(contract):
         contract.get_job("99999")
     assert "Job contract not found" in str(exc.value)
 
+
+def test_consensus_rejects_divergent_payout_tiers(contract, direct_vm, direct_alice, direct_bob):
+    """
+    ECONOMIC DETERMINISM TEST:
+    Demonstrates that if Leader proposes FULL (100%) but a Validator evaluates
+    SUBSTANTIAL (75%), consensus REJECTS the leader proposal.
+    Materially different payouts CANNOT pass consensus!
+    """
+    direct_vm.sender = direct_alice
+    direct_vm.value = 10000
+    dod = "Build responsive web3 landing page with wallet connect button."
+    job_id = contract.create_job(direct_bob, dod)
+
+    direct_vm.sender = direct_bob
+    deliverable_url = "https://milestone-test-consensus.vercel.app"
+    contract.submit_deliverable(job_id, deliverable_url)
+
+    direct_vm.mock_web("milestone-test-consensus.vercel.app", {"status": 200, "body": "Page live with partial buttons"})
+
+    # Clear validators captured list
+    direct_vm.clear_validators()
+
+    # Leader evaluates SUBSTANTIAL
+    direct_vm.mock_llm(".*", json.dumps({"tier": "SUBSTANTIAL", "confidence": 90, "reason": "Partial items delivered"}))
+    contract.adjudicate_job(job_id)
+
+    # Now verify validator logic:
+    # If a divergent leader proposal had proposed FULL, validator returns False!
+    from genlayer.gl.vm import Return
+    divergent_leader_proposal = Return(calldata={"tier": "FULL", "confidence": 95, "reason": "Proposed full"})
+    is_valid = direct_vm.run_validator(index=0, leader_result=divergent_leader_proposal.calldata)
+    assert is_valid is False, "Validator must reject leader proposal with divergent payout tier!"

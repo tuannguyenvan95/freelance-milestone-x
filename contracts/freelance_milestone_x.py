@@ -48,7 +48,8 @@ class JobContract:
     deliverable_url: str     # Public URL of the deliverable (Vercel, GitHub, doc, etc.)
     escrow_amount: bigint
     status: str              # "CREATED", "SUBMITTED", "SETTLED"
-    completion_percentage: bigint  # 0 to 100
+    payout_tier: str         # "FULL", "SUBSTANTIAL", "PARTIAL", "MINIMAL", "REJECTED"
+    completion_percentage: bigint  # 100, 75, 50, 25, 0
     freelancer_payout: bigint
     client_refund: bigint
     reason: str              # AI consensus evaluation breakdown
@@ -83,7 +84,7 @@ class Contract(gl.Contract):
             return json.loads(cleaned.strip())
         except Exception as e:
             return {
-                "completion_percentage": 0,
+                "tier": "REJECTED",
                 "confidence": 0,
                 "reason": f"Failed to parse LLM JSON: {str(e)[:100]}"
             }
@@ -118,6 +119,7 @@ class Contract(gl.Contract):
             deliverable_url="",
             escrow_amount=deposit,
             status="CREATED",
+            payout_tier="NONE",
             completion_percentage=bigint(0),
             freelancer_payout=bigint(0),
             client_refund=bigint(0),
@@ -154,8 +156,8 @@ class Contract(gl.Contract):
     @gl.public.write
     def adjudicate_job(self, job_id: str) -> None:
         """
-        Validators inspect the deliverable URL on-chain, cross-reference against
-        the Definition of Done (DoD), reach consensus on completion %, and split the escrow.
+        Validators inspect deliverable URL on-chain, cross-reference against DoD,
+        reach consensus on discrete payout tier, and disburse escrow deterministically.
         """
         if job_id not in self.jobs:
             raise gl.UserError("Job contract not found.")
@@ -167,7 +169,6 @@ class Contract(gl.Contract):
         if not job.deliverable_url:
             raise gl.UserError("Deliverable URL is missing.")
 
-        # Extract values to local variables BEFORE nondet block
         dod_local = str(job.definition_of_done)
         url_local = str(job.deliverable_url)
 
@@ -187,7 +188,7 @@ class Contract(gl.Contract):
             lower_web = web_content[:500].lower() if web_content else ""
             if len(web_content.strip()) < 15 or "404 not found" in lower_web or "access denied" in lower_web:
                 return {
-                    "completion_percentage": 0,
+                    "tier": "REJECTED",
                     "confidence": 100,
                     "reason": "Deliverable URL is inaccessible, offline, 404, or blank."
                 }
@@ -207,18 +208,18 @@ OBSERVED DELIVERABLE CONTENT (from {url_local}):
 {snippet}
 \"\"\"
 
-ARBITRATION INSTRUCTIONS:
-1. Objectively evaluate which requirements were met, partially met, or missing.
-2. Determine an overall integer completion score from 0 to 100:
-   - 100: Flawlessly meets or exceeds all criteria.
-   - 70-99: Core requirements met, minor non-blocking issues.
-   - 30-69: Partially complete, several key DoD items missing.
-   - 0-29: Unrelated, severely broken, or fail to deliver.
+EVALUATION RUBRIC & DISCRETE SETTLEMENT TIERS:
+Classify the deliverable into strictly ONE of the following discrete settlement tiers:
+- "FULL": 100% completion. Flawlessly meets or exceeds all criteria specified in the DoD.
+- "SUBSTANTIAL": 75% completion. Core functional requirements fully delivered and working, only minor non-functional or cosmetic items missing.
+- "PARTIAL": 50% completion. Approximately half of the required DoD items are met, but key features remain incomplete.
+- "MINIMAL": 25% completion. Only an early skeleton or minimal prototype provided; majority of DoD items unmet.
+- "REJECTED": 0% completion. Deliverable is broken, offline, fraudulent, or unrelated to the DoD.
 
 OUTPUT FORMAT:
 Respond ONLY with a VALID JSON object (no markdown, no backticks):
 {{
-  "completion_percentage": <integer from 0 to 100>,
+  "tier": "FULL" | "SUBSTANTIAL" | "PARTIAL" | "MINIMAL" | "REJECTED",
   "confidence": <integer from 0 to 100>,
   "reason": "<concise breakdown max 220 characters>"
 }}"""
@@ -241,11 +242,10 @@ Respond ONLY with a VALID JSON object (no markdown, no backticks):
                         cleaned = cleaned[:-3]
                     parsed = json.loads(cleaned.strip())
 
-                try:
-                    score = int(parsed.get("completion_percentage", 0))
-                    score = max(0, min(100, score))
-                except Exception:
-                    score = 0
+                tier_candidate = str(parsed.get("tier", "REJECTED")).strip().upper()
+                valid_tiers = ("FULL", "SUBSTANTIAL", "PARTIAL", "MINIMAL", "REJECTED")
+                if tier_candidate not in valid_tiers:
+                    tier_candidate = "REJECTED"
 
                 try:
                     conf = int(parsed.get("confidence", 0))
@@ -256,13 +256,13 @@ Respond ONLY with a VALID JSON object (no markdown, no backticks):
                 reason_str = str(parsed.get("reason", "Milestone evaluated by AI jury."))[:220]
 
                 return {
-                    "completion_percentage": score,
+                    "tier": tier_candidate,
                     "confidence": conf,
                     "reason": reason_str
                 }
             except Exception as e:
                 return {
-                    "completion_percentage": 0,
+                    "tier": "REJECTED",
                     "confidence": 0,
                     "reason": f"Audit execution failed: {str(e)[:100]}"
                 }
@@ -271,17 +271,20 @@ Respond ONLY with a VALID JSON object (no markdown, no backticks):
             if not isinstance(leader_res, gl.vm.Return):
                 return False
             leader = leader_res.calldata
-            if not isinstance(leader, dict) or "completion_percentage" not in leader:
+            if not isinstance(leader, dict) or "tier" not in leader:
+                return False
+
+            valid_tiers = ("FULL", "SUBSTANTIAL", "PARTIAL", "MINIMAL", "REJECTED")
+            l_tier = str(leader.get("tier", "")).strip().upper()
+            if l_tier not in valid_tiers:
                 return False
 
             mine = leader_fn()
+            m_tier = str(mine.get("tier", "")).strip().upper()
 
-            try:
-                l_score = int(leader.get("completion_percentage", 0))
-                m_score = int(mine.get("completion_percentage", 0))
-                return abs(l_score - m_score) <= 10
-            except Exception:
-                return False
+            # ECONOMIC DETERMINISM: Validators MUST agree on the EXACT settlement tier.
+            # Every validator-compatible output produces the exact same payout.
+            return l_tier == m_tier
 
         adjudication_res = gl.vm.run_nondet(leader_fn, validator_fn)
         if isinstance(adjudication_res, dict):
@@ -289,16 +292,33 @@ Respond ONLY with a VALID JSON object (no markdown, no backticks):
         else:
             final_res = self._parse_llm_json(str(adjudication_res))
 
-        pct = int(final_res.get("completion_percentage", 0))
-        pct = max(0, min(100, pct))
+        tier = str(final_res.get("tier", "REJECTED")).strip().upper()
+        valid_tiers = ("FULL", "SUBSTANTIAL", "PARTIAL", "MINIMAL", "REJECTED")
+        if tier not in valid_tiers:
+            tier = "REJECTED"
+
         reason = str(final_res.get("reason", "Consensus concluded."))
 
+        # Map discrete tier deterministically to percentage
+        pct = bigint(0)
+        if tier == "FULL":
+            pct = bigint(100)
+        elif tier == "SUBSTANTIAL":
+            pct = bigint(75)
+        elif tier == "PARTIAL":
+            pct = bigint(50)
+        elif tier == "MINIMAL":
+            pct = bigint(25)
+        else:
+            pct = bigint(0)
+
         escrow_total = job.escrow_amount
-        freelancer_share = (escrow_total * bigint(pct)) // bigint(100)
+        freelancer_share = (escrow_total * pct) // bigint(100)
         client_refund = escrow_total - freelancer_share
 
         job.status = "SETTLED"
-        job.completion_percentage = bigint(pct)
+        job.payout_tier = tier
+        job.completion_percentage = pct
         job.freelancer_payout = freelancer_share
         job.client_refund = client_refund
         job.reason = reason
@@ -326,6 +346,7 @@ Respond ONLY with a VALID JSON object (no markdown, no backticks):
             "deliverable_url": j.deliverable_url,
             "escrow_amount": str(j.escrow_amount),
             "status": j.status,
+            "payout_tier": j.payout_tier,
             "completion_percentage": str(j.completion_percentage),
             "freelancer_payout": str(j.freelancer_payout),
             "client_refund": str(j.client_refund),

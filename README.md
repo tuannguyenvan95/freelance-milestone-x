@@ -40,6 +40,7 @@ Below is an illustrative worked example based on the contract execution flow, ve
     "deliverable_url": "",
     "escrow_amount": "10000",
     "status": "CREATED",
+    "payout_tier": "NONE",
     "completion_percentage": "0",
     "freelancer_payout": "0",
     "client_refund": "0",
@@ -63,8 +64,9 @@ Below is an illustrative worked example based on the contract execution flow, ve
   - Dark mode toggle: Under construction, toggle icon present but theme switch incomplete.
   ```
 - **Semantic Consensus Evaluation (via `gl.nondet.exec_prompt`):**
-  - Leader evaluates completion score: `80%`, confidence: `92%`.
-  - Independent Validators verify: `abs(l_score - m_score) <= 10` (Consensus achieved on meaning).
+  - Leader classifies deliverable as: `tier: "SUBSTANTIAL"`, confidence: `92%`.
+  - Independent Validators verify: `mine["tier"] == leader["tier"] == "SUBSTANTIAL"`.
+  - Every validator-compatible output produces the exact same settlement.
 - **Settled Job State Query (`get_job("1")`) [Real Result from gltest]:**
   ```json
   {
@@ -75,15 +77,16 @@ Below is an illustrative worked example based on the contract execution flow, ve
     "deliverable_url": "https://landing-page-milestone.vercel.app",
     "escrow_amount": "10000",
     "status": "SETTLED",
-    "completion_percentage": "80",
-    "freelancer_payout": "8000",
-    "client_refund": "2000",
+    "payout_tier": "SUBSTANTIAL",
+    "completion_percentage": "75",
+    "freelancer_payout": "7500",
+    "client_refund": "2500",
     "reason": "Hero, pricing, and responsive layout are solid. Dark mode toggle is only partially implemented."
   }
   ```
-- **Autonomous Payout Split (Expected & Tested On-Chain):**
-  - Freelancer receives: `8,000 GEN` (`80%`) via `gl.get_contract_at(freelancer).emit_transfer(value=u256(8000))`
-  - Client refunded: `2,000 GEN` (`20%`) via `gl.get_contract_at(client).emit_transfer(value=u256(2000))`
+- **Autonomous Payout Split (Deterministic On-Chain Execution):**
+  - Freelancer receives: `7,500 GEN` (`75%`) via `gl.get_contract_at(freelancer).emit_transfer(value=u256(7500))`
+  - Client refunded: `2,500 GEN` (`25%`) via `gl.get_contract_at(client).emit_transfer(value=u256(2500))`
 
 ---
 
@@ -99,39 +102,51 @@ In the global remote freelance economy (over $1.5T annually), milestone acceptan
 `FreelanceMilestoneX` eliminates middlemen and replaces subjective human arbitration with an autonomous Intelligent Contract:
 1. **Natural Language DoD Escrow:** Client locks funds and specifies acceptance criteria in plain English (**Definition of Done - DoD**).
 2. **On-chain Deliverable Audit:** Freelancer submits a public URL (Vercel deploy, PR diff, live demo, documentation). Validators fetch and render the live page directly on-chain via `gl.nondet.web.render`.
-3. **AI Jury Semantic Evaluation:** Independent validators cross-reference the observed deliverable against the DoD using `gl.nondet.exec_prompt(prompt, response_format="json")`.
-4. **Tolerance-Based Semantic Consensus ($\pm 10\%$):** Validators agree on the **SUBSTANCE/MEANING** of the score rather than surface formatting.
-5. **Flexible Partial Payout (Fair Split):** Not binary (100% or 0%). If completion is 80%, 80% is paid to the freelancer and 20% is instantly refunded to the client in the same atomic transaction.
+3. **AI Jury Evaluation with Discrete Settlement Tiers:** Independent validators classify the observed deliverable into strictly defined discrete settlement tiers using `gl.nondet.exec_prompt(prompt, response_format="json")`.
+4. **Economic Determinism & Payout Binding:** In `validator_fn`, validators enforce strict equality on the settlement tier (`mine["tier"] == leader["tier"]`). Every validator-compatible output produces the exact same financial settlement, eliminating leader-dependent variance.
+5. **Flexible Proportional Payout:** Funds are split in a single atomic transaction without intermediate claims.
 
 ---
 
-## 4. How Consensus Works: Agreement on MEANING, Not Format
+## 4. How Consensus Works: Economic Determinism on MEANING
 
-GenLayer's Optimistic Democracy requires validators to reach consensus on non-deterministic data. A naive implementation that checks format or string equality (`leader_result == validator_result`) fails in qualitative adjudication because different LLMs may phrase reasons differently or assign scores varying by 1-2 points (e.g. 82% vs 80%).
+GenLayer's Optimistic Democracy requires that validators reach consensus on the substantive decision. In continuous scoring with fuzzy tolerance bands ($\pm 10$ points), different leaders proposing 70%, 80%, or 90% could all pass consensus with a validator assessing 80%, creating leader-dependent financial payout variance.
 
-`FreelanceMilestoneX` implements **Tolerance-Based Semantic Consensus**:
+`FreelanceMilestoneX` solves this by binding the payout-driving result to **Discrete Settlement Tiers**:
+
+| Tier | Payout % | Client Refund % | Evaluation Standard |
+|---|---|---|---|
+| **`FULL`** | 100% | 0% | Flawlessly meets or exceeds all criteria in DoD. |
+| **`SUBSTANTIAL`** | 75% | 25% | Core requirements operational; minor cosmetic/non-blocking omissions. |
+| **`PARTIAL`** | 50% | 50% | Approximately half of DoD requirements met; key items incomplete. |
+| **`MINIMAL`** | 25% | 75% | Early prototype / skeleton provided; majority of DoD unmet. |
+| **`REJECTED`** | 0% | 100% | Broken, offline, 404, or deliverable unrelated to DoD. |
+
+### Consensus Implementation:
 ```python
 def validator_fn(leader_res) -> bool:
     if not isinstance(leader_res, gl.vm.Return):
         return False
     leader = leader_res.calldata
-    if not isinstance(leader, dict) or "completion_percentage" not in leader:
+    if not isinstance(leader, dict) or "tier" not in leader:
+        return False
+
+    valid_tiers = ("FULL", "SUBSTANTIAL", "PARTIAL", "MINIMAL", "REJECTED")
+    l_tier = str(leader.get("tier", "")).strip().upper()
+    if l_tier not in valid_tiers:
         return False
 
     mine = leader_fn()
+    m_tier = str(mine.get("tier", "")).strip().upper()
 
-    try:
-        l_score = int(leader.get("completion_percentage", 0))
-        m_score = int(mine.get("completion_percentage", 0))
-        # Agreement on MEANING: validators accept if completion percentage is within +- 10%
-        return abs(l_score - m_score) <= 10
-    except Exception:
-        return False
+    # Substantive consensus: validators MUST agree on the exact settlement tier
+    return l_tier == m_tier
 ```
 
 ### Why this satisfies the GenLayer make-or-break bar:
-- **Substantive agreement:** If Leader decides `80%` and Validator evaluates `40%`, consensus FAILS (`abs(80 - 40) = 40 > 10`). Two validators with materially different assessments will never both pass.
-- **Format-agnostic:** Differences in punctuation, whitespace, or explanatory text in `"reason"` are ignored; only the substantive assessment metric (`completion_percentage`) governs consensus.
+- **Zero Payout Divergence:** Because validators enforce `l_tier == m_tier`, every proposal that passes consensus produces the exact same settlement percentage and token transfer amount.
+- **Rejection of Materially Different Payouts:** If Leader proposes `FULL` (100%) but Validator evaluates `SUBSTANTIAL` (75%), consensus immediately REJECTS the leader proposal.
+- **Format-Agnostic:** Variations in phrasing, whitespace, or explanatory text in the `"reason"` field are ignored; consensus is bound strictly to the economic payout tier.
 
 ---
 
@@ -149,18 +164,18 @@ def validator_fn(leader_res) -> bool:
 - `adjudicate_job(job_id: str) -> None`:
   - Permissionless trigger once status is `"SUBMITTED"`.
   - Runs `gl.vm.run_nondet` with web render and LLM jury evaluation.
-  - Enforces $\pm 10\%$ semantic tolerance consensus.
+  - Enforces discrete tier semantic consensus (`l_tier == m_tier`).
   - Automatically transfers proportional funds to freelancer and client via `emit_transfer`. Sets status to `"SETTLED"`.
 
 ### View Methods
-- `get_job(job_id: str) -> str`: Returns full job record serialized as a JSON string.
+- `get_job(job_id: str) -> str`: Returns full job record serialized as a JSON string including `payout_tier`.
 - `get_job_count() -> int`: Returns total number of jobs created.
 
 ---
 
 ## 6. Test Suite & Verification Results
 
-The test suite thoroughly covers all lifecycle transitions, edge cases, permission checks, consensus tolerance, and concurrent job isolation:
+The test suite covers all lifecycle transitions, edge cases, permission checks, discrete tier payouts, and consensus rejection of divergent payouts:
 
 ```bash
 gltest tests/
@@ -179,28 +194,31 @@ INFO:   Artifacts directory: artifacts
 platform win32 -- Python 3.13.12, pytest-9.1.1, pluggy-1.6.0
 rootdir: C:\Users\Admin\Documents\genlayer\intel contract\FreelanceMilestoneX
 plugins: anyio-4.14.2, genlayer-test-0.29.2
-collected 12 items
+collected 15 items
 
-tests\test_freelance_milestone_x.py ............                         [100%]
+tests\test_freelance_milestone_x.py ...............                      [100%]
 
-============================= 12 passed in 1.23s ==============================
+============================= 15 passed in 1.70s ==============================
 ```
 
 ### Test Coverage Table:
 | # | Test Function | Scenario Tested | Outcome |
 |---|---|---|---|
 | 1 | `test_initial_state` | Fresh deployment verification | Initial job count is 0 |
-| 2 | `test_create_job_success` | Valid job creation and funding | Escrow locked, status `CREATED` |
+| 2 | `test_create_job_success` | Valid job creation and funding | Escrow locked, status `CREATED`, tier `NONE` |
 | 3 | `test_create_job_validation_errors` | Zero deposit, DoD too short, self-assignment | Rejected with explicit UserError |
 | 4 | `test_submit_deliverable_success` | Freelancer submits valid deliverable URL | Status updated to `SUBMITTED` |
 | 5 | `test_submit_deliverable_permissions` | Unauthorized user, invalid job, wrong protocol | Access denied / schema invalid |
-| 6 | `test_adjudicate_full_completion_100` | 100% DoD satisfaction on live deploy | 100% to freelancer, 0% to client |
-| 7 | `test_adjudicate_partial_payout_80` | Partial completion (80%) | 80% to freelancer, 20% refund to client |
-| 8 | `test_adjudicate_inaccessible_404_url` | Offline, 404, or blank URL | 0% score, 100% refund to client |
-| 9 | `test_cannot_adjudicate_unsubmitted` | Attempt to adjudicate before submission or twice | Double-spend & early calls blocked |
-| 10 | `test_adjudicate_unrelated_submission` | Submitting unrelated site (e.g. recipe blog) | 0% score, 100% refund to client |
-| 11 | `test_multiple_concurrent_jobs` | Multiple independent clients and freelancers | State isolation, accurate payouts |
-| 12 | `test_get_nonexistent_job_raises_error` | Querying nonexistent job ID | Reverts with `"Job contract not found"` |
+| 6 | `test_adjudicate_full_completion_tier` | `FULL` tier: 100% DoD satisfaction | 100% to freelancer, 0% to client |
+| 7 | `test_adjudicate_substantial_completion_tier` | `SUBSTANTIAL` tier: 75% completion | 75% to freelancer, 25% refund to client |
+| 8 | `test_adjudicate_partial_completion_tier` | `PARTIAL` tier: 50% completion | 50% to freelancer, 50% refund to client |
+| 9 | `test_adjudicate_minimal_completion_tier` | `MINIMAL` tier: 25% completion | 25% to freelancer, 75% refund to client |
+| 10 | `test_adjudicate_inaccessible_404_url` | Offline, 404, or blank URL | `REJECTED` tier: 0% payout, 100% refund |
+| 11 | `test_cannot_adjudicate_unsubmitted` | Early or double adjudication attempt | Reverts with descriptive UserError |
+| 12 | `test_adjudicate_unrelated_submission` | Submitting unrelated site (recipe blog) | `REJECTED` tier: 0% payout, 100% refund |
+| 13 | `test_multiple_concurrent_jobs` | Multiple concurrent jobs with different tiers | Strict state and balance isolation |
+| 14 | `test_get_nonexistent_job_raises_error` | Querying nonexistent job ID | Reverts with `"Job contract not found"` |
+| 15 | `test_consensus_rejects_divergent_payout_tiers` | Leader proposes `FULL` (100%), Validator evaluates `SUBSTANTIAL` (75%) | Consensus REJECTS divergent proposal (`is_valid is False`) |
 
 ---
 

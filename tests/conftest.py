@@ -22,7 +22,7 @@ def sim_installMocks(mocks: dict, vm=None):
 
         llm_mocks = mocks.get("llm_mocks", {})
         if isinstance(llm_mocks, dict):
-            if "completion_percentage" in llm_mocks:
+            if "tier" in llm_mocks or "completion_percentage" in llm_mocks:
                 vm.mock_llm(".*", json.dumps(llm_mocks))
             else:
                 for prompt_pattern, resp in llm_mocks.items():
