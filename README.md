@@ -3,7 +3,7 @@
 > **Track:** Future of Work / Onchain Justice / Autonomous Protocols  
 > **Network:** GenLayer studionet (Chain ID: `61999` / `0xF1EF`)  
 > **Target Environment:** [GenLayer Studio](https://studio.genlayer.com)  
-> **Contract Address:** `0x560317686e36ca6E7Ef3fc5847678931fcbB57c7`  
+> **Contract Address:** `0x3005D3C545B918c04CFFAC33523c89de06ABA3B9`  
 > **Execution Engine:** GenVM / Optimistic Democracy Semantic Consensus  
 > **Package / SDK:** `py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6`  
 
@@ -13,9 +13,10 @@
 
 The `FreelanceMilestoneX` Intelligent Contract is deployed on GenLayer studionet:
 
-- **Contract Address:** `0x560317686e36ca6E7Ef3fc5847678931fcbB57c7`
+- **Contract Address:** `0x3005D3C545B918c04CFFAC33523c89de06ABA3B9`
 - **Network:** `studionet` (Chain ID: `61999` / `0xF1EF`)
-- **Explorer:** [https://explorer.genlayer.com/address/0x560317686e36ca6E7Ef3fc5847678931fcbB57c7](https://explorer.genlayer.com/address/0x560317686e36ca6E7Ef3fc5847678931fcbB57c7)
+- **Explorer:** [https://explorer.genlayer.com/address/0x3005D3C545B918c04CFFAC33523c89de06ABA3B9](https://explorer.genlayer.com/address/0x3005D3C545B918c04CFFAC33523c89de06ABA3B9)
+- **Studio Explorer:** [https://explorer-studio.genlayer.com/address/0x3005D3C545B918c04CFFAC33523c89de06ABA3B9](https://explorer-studio.genlayer.com/address/0x3005D3C545B918c04CFFAC33523c89de06ABA3B9)
 - **Contract Source:** [`contracts/freelance_milestone_x.py`](contracts/freelance_milestone_x.py)
 
 ---
