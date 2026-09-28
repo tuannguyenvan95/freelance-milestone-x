@@ -2,6 +2,15 @@ import pytest
 import json
 from gltest import get_gl_client, get_accounts
 
+# Ensure gl.UserError is aliased in the local test runner context
+try:
+    import genlayer.gl as gl
+    if not hasattr(gl, "UserError"):
+        import genlayer.gl.vm as gl_vm
+        gl.UserError = gl_vm.UserError
+except Exception:
+    pass
+
 
 def sim_installMocks(mocks: dict, vm=None):
     """
