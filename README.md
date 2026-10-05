@@ -3,7 +3,7 @@
 > **Track:** Future of Work / Onchain Justice / Autonomous Protocols  
 > **Network:** GenLayer studionet (Chain ID: `61999` / `0xF1EF`)  
 > **Target Environment:** [GenLayer Studio](https://studio.genlayer.com)  
-> **Contract Address:** `0x3005D3C545B918c04CFFAC33523c89de06ABA3B9`  
+> **Contract Address:** `0xBda82E8cC3ee6407dEF61409f6C70eC61287e6fe`  
 > **Execution Engine:** GenVM / Optimistic Democracy Semantic Consensus  
 > **Package / SDK:** `py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6`  
 
@@ -13,10 +13,10 @@
 
 The `FreelanceMilestoneX` Intelligent Contract is deployed on GenLayer studionet:
 
-- **Contract Address:** `0x3005D3C545B918c04CFFAC33523c89de06ABA3B9`
+- **Contract Address:** `0xBda82E8cC3ee6407dEF61409f6C70eC61287e6fe`
 - **Network:** `studionet` (Chain ID: `61999` / `0xF1EF`)
-- **Explorer:** [https://explorer.genlayer.com/address/0x3005D3C545B918c04CFFAC33523c89de06ABA3B9](https://explorer.genlayer.com/address/0x3005D3C545B918c04CFFAC33523c89de06ABA3B9)
-- **Studio Explorer:** [https://explorer-studio.genlayer.com/address/0x3005D3C545B918c04CFFAC33523c89de06ABA3B9](https://explorer-studio.genlayer.com/address/0x3005D3C545B918c04CFFAC33523c89de06ABA3B9)
+- **Explorer:** [https://explorer.genlayer.com/address/0xBda82E8cC3ee6407dEF61409f6C70eC61287e6fe](https://explorer.genlayer.com/address/0xBda82E8cC3ee6407dEF61409f6C70eC61287e6fe)
+- **Studio Explorer:** [https://explorer-studio.genlayer.com/address/0xBda82E8cC3ee6407dEF61409f6C70eC61287e6fe](https://explorer-studio.genlayer.com/address/0xBda82E8cC3ee6407dEF61409f6C70eC61287e6fe)
 - **Contract Source:** [`contracts/freelance_milestone_x.py`](contracts/freelance_milestone_x.py)
 
 ---
@@ -25,10 +25,10 @@ The `FreelanceMilestoneX` Intelligent Contract is deployed on GenLayer studionet
 
 Below is an illustrative worked example based on the contract execution flow, verified with real local `gltest` execution results and expected on-chain state transitions:
 
-### Step A: Job Creation & Escrow Deposit
+### Step A: Job Creation & Escrow Deposit (with Defined Deadline)
 - **Caller (Client Alice):** `0x2bd806c97F0e00aF1a1fC3328fA763a9269723C8`
 - **Freelancer (Bob):** `0x81b637d8fCD2C6da6359E6963113a1170de795e4`
-- **Transaction:** `create_job(freelancer="0x81b6...", definition_of_done="Deploy Next.js dApp to Vercel with Metamask wallet connect and transaction history table.")`
+- **Transaction:** `create_job(freelancer="0x81b6...", definition_of_done="Deploy Next.js dApp to Vercel with Metamask wallet connect and transaction history table.", deadline_timestamp=1780000000)`
 - **Value Attached:** `10000` (10,000 GEN deposited into escrow)
 - **Real Result [from gltest]:** `job_id = "1"`
 - **Initial Job State Query (`get_job("1")`):**
@@ -45,14 +45,17 @@ Below is an illustrative worked example based on the contract execution flow, ve
     "completion_percentage": "0",
     "freelancer_payout": "0",
     "client_refund": "0",
-    "reason": "Escrow locked. Waiting for freelancer submission."
+    "reason": "Escrow locked. Waiting for freelancer submission.",
+    "deadline": "1780000000",
+    "created_at": "1",
+    "resolved_at": "0"
   }
   ```
 
 ### Step B: Deliverable Proof Submission
 - **Caller (Freelancer Bob):** `0x81b637d8fCD2C6da6359E6963113a1170de795e4`
 - **Transaction:** `submit_deliverable(job_id="1", deliverable_url="https://landing-page-milestone.vercel.app")`
-- **Real Result [from gltest]:** Status transitions to `"SUBMITTED"` and `deliverable_url` is stored.
+- **Real Result [from gltest]:** Status transitions to `"SUBMITTED"` and `deliverable_url` is stored before the deadline.
 
 ### Step C: Autonomous Decentralized AI Adjudication
 - **Caller (Any Party / Keeper):** `adjudicate_job(job_id="1")`
@@ -82,12 +85,22 @@ Below is an illustrative worked example based on the contract execution flow, ve
     "completion_percentage": "75",
     "freelancer_payout": "7500",
     "client_refund": "2500",
-    "reason": "Hero, pricing, and responsive layout are solid. Dark mode toggle is only partially implemented."
+    "reason": "Hero, pricing, and responsive layout are solid. Dark mode toggle is only partially implemented.",
+    "deadline": "1780000000",
+    "created_at": "1",
+    "resolved_at": "1"
   }
   ```
 - **Autonomous Payout Split (Deterministic On-Chain Execution):**
   - Freelancer receives: `7,500 GEN` (`75%`) via `gl.get_contract_at(freelancer).emit_transfer(value=u256(7500))`
   - Client refunded: `2,500 GEN` (`25%`) via `gl.get_contract_at(client).emit_transfer(value=u256(2500))`
+
+### Step D: Safe Client Recovery Path (Alternative Flow When Freelancer Never Submits)
+- If Bob ghosts the project and the block timestamp exceeds `job.deadline`:
+- **Caller (Client Alice Only):** `cancel_expired_job(job_id="1")`
+- **State Transition:** Status becomes `"CANCELLED"`, `payout_tier` becomes `"CANCELLED"`.
+- **100% Escrow Refund:** 10,000 GEN is automatically refunded in full to Alice:
+  `gl.get_contract_at(client).emit_transfer(value=u256(10000))`
 
 ---
 
