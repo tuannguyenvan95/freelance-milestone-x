@@ -154,14 +154,19 @@ def validator_fn(leader_res) -> bool:
 ## 5. Contract API Reference
 
 ### Write Methods
-- `create_job(freelancer: Address, definition_of_done: str) -> str`:
+- `create_job(freelancer: Address, definition_of_done: str, deadline_timestamp: bigint = bigint(0)) -> str`:
   - Payable: Locks `gl.message.value` into escrow.
-  - Enforces minimum DoD length ($\ge 15$ chars) and prohibits assigning job to self.
+  - Enforces minimum DoD length ($\ge 15$ chars), prohibits assigning job to self, and validates future deadline (defaults to 14 days if set to 0).
   - Returns `job_id`.
 - `submit_deliverable(job_id: str, deliverable_url: str) -> None`:
   - Only callable by assigned `freelancer`.
+  - Enforces submission before `deadline`.
   - Validates `http://` or `https://` schema.
   - Sets job status to `"SUBMITTED"`.
+- `cancel_expired_job(job_id: str) -> None`:
+  - Safe client recovery path: Only callable by the `client` after the job `deadline` has elapsed.
+  - Available when status is `"CREATED"` (freelancer never submitted deliverable).
+  - Transitions status to `"CANCELLED"` and unlocks 100% full refund back to the client via `_safe_transfer`.
 - `adjudicate_job(job_id: str) -> None`:
   - Permissionless trigger once status is `"SUBMITTED"`.
   - Runs `gl.vm.run_nondet` with web render and LLM jury evaluation.
@@ -169,14 +174,15 @@ def validator_fn(leader_res) -> bool:
   - Automatically transfers proportional funds to freelancer and client via `emit_transfer`. Sets status to `"SETTLED"`.
 
 ### View Methods
-- `get_job(job_id: str) -> str`: Returns full job record serialized as a JSON string including `payout_tier`.
+- `get_job(job_id: str) -> str`: Returns full job record serialized as a JSON string including `payout_tier`, `deadline`, and `status`.
 - `get_job_count() -> int`: Returns total number of jobs created.
+- `get_current_time() -> bigint`: Returns current trusted block / message execution timestamp in Unix epoch seconds.
 
 ---
 
 ## 6. Test Suite & Verification Results
 
-The test suite covers all lifecycle transitions, edge cases, permission checks, discrete tier payouts, and consensus rejection of divergent payouts:
+The test suite covers all lifecycle transitions, edge cases, permission checks, discrete tier payouts, consensus rejection of divergent payouts, and client recovery paths:
 
 ```bash
 gltest tests/
@@ -195,20 +201,20 @@ INFO:   Artifacts directory: artifacts
 platform win32 -- Python 3.13.12, pytest-9.1.1, pluggy-1.6.0
 rootdir: C:\Users\Admin\Documents\genlayer\intel contract\FreelanceMilestoneX
 plugins: anyio-4.14.2, genlayer-test-0.29.2
-collected 15 items
+collected 21 items
 
-tests\test_freelance_milestone_x.py ...............                      [100%]
+tests\test_freelance_milestone_x.py .....................                [100%]
 
-============================= 15 passed in 1.70s ==============================
+============================= 21 passed in 2.44s ==============================
 ```
 
 ### Test Coverage Table:
 | # | Test Function | Scenario Tested | Outcome |
 |---|---|---|---|
 | 1 | `test_initial_state` | Fresh deployment verification | Initial job count is 0 |
-| 2 | `test_create_job_success` | Valid job creation and funding | Escrow locked, status `CREATED`, tier `NONE` |
-| 3 | `test_create_job_validation_errors` | Zero deposit, DoD too short, self-assignment | Rejected with explicit UserError |
-| 4 | `test_submit_deliverable_success` | Freelancer submits valid deliverable URL | Status updated to `SUBMITTED` |
+| 2 | `test_create_job_success` | Valid job creation, funding, and deadline | Escrow locked, status `CREATED`, tier `NONE`, deadline recorded |
+| 3 | `test_create_job_validation_errors` | Zero deposit, DoD too short, self-assignment, past deadline | Rejected with explicit UserError |
+| 4 | `test_submit_deliverable_success` | Freelancer submits valid deliverable URL before deadline | Status updated to `SUBMITTED` |
 | 5 | `test_submit_deliverable_permissions` | Unauthorized user, invalid job, wrong protocol | Access denied / schema invalid |
 | 6 | `test_adjudicate_full_completion_tier` | `FULL` tier: 100% DoD satisfaction | 100% to freelancer, 0% to client |
 | 7 | `test_adjudicate_substantial_completion_tier` | `SUBSTANTIAL` tier: 75% completion | 75% to freelancer, 25% refund to client |
@@ -220,6 +226,12 @@ tests\test_freelance_milestone_x.py ...............                      [100%]
 | 13 | `test_multiple_concurrent_jobs` | Multiple concurrent jobs with different tiers | Strict state and balance isolation |
 | 14 | `test_get_nonexistent_job_raises_error` | Querying nonexistent job ID | Reverts with `"Job contract not found"` |
 | 15 | `test_consensus_rejects_divergent_payout_tiers` | Leader proposes `FULL` (100%), Validator evaluates `SUBSTANTIAL` (75%) | Consensus REJECTS divergent proposal (`is_valid is False`) |
+| 16 | `test_cancel_expired_job_success_full_refund` | Client cancels unsubmitted job after deadline expiration | Status becomes `CANCELLED`, 100% escrow refunded to client |
+| 17 | `test_cancel_expired_job_before_deadline_fails` | Client attempts to cancel before deadline expires | Reverts with `"Job deadline has not expired yet"` |
+| 18 | `test_cancel_expired_job_by_non_client_fails` | Non-client attempts to cancel expired job | Reverts with `"Only the client can cancel an expired job"` |
+| 19 | `test_cannot_cancel_submitted_or_settled_job` | Cancellation attempt on SUBMITTED or SETTLED job | Reverts with `"Only jobs in CREATED status can be cancelled"` |
+| 20 | `test_cannot_submit_after_deadline_or_cancellation` | Freelancer submits after deadline or after job cancelled | Reverts with deadline/cancellation error |
+| 21 | `test_cannot_adjudicate_cancelled_job` | Adjudication attempt on CANCELLED job | Reverts with `"Only submitted jobs can be adjudicated"` |
 
 ---
 

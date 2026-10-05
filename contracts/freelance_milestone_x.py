@@ -45,12 +45,13 @@ class JobContract:
     definition_of_done: str  # Clear criteria written in natural language
     deliverable_url: str     # Public URL of the deliverable (Vercel, GitHub, doc, etc.)
     escrow_amount: bigint
-    status: str              # "CREATED", "SUBMITTED", "SETTLED"
-    payout_tier: str         # "FULL", "SUBSTANTIAL", "PARTIAL", "MINIMAL", "REJECTED"
+    status: str              # "CREATED", "SUBMITTED", "SETTLED", "CANCELLED"
+    payout_tier: str         # "FULL", "SUBSTANTIAL", "PARTIAL", "MINIMAL", "REJECTED", "CANCELLED", "NONE"
     completion_percentage: bigint  # 100, 75, 50, 25, 0
     freelancer_payout: bigint
     client_refund: bigint
-    reason: str              # AI consensus evaluation breakdown
+    reason: str              # AI consensus breakdown or cancellation reason
+    deadline: bigint         # Unix timestamp deadline for deliverable submission
     created_at: bigint
     resolved_at: bigint
 
@@ -68,6 +69,32 @@ class Contract(gl.Contract):
         # GenVM automatically initializes TreeMap storage fields.
         self.owner = _get_sender()
         self.job_count = bigint(0)
+
+    def _get_current_timestamp(self) -> bigint:
+        """Derive trusted deterministic execution timestamp from GenLayer transaction context."""
+        try:
+            from datetime import datetime
+            dt_raw = getattr(gl.message, "datetime", None)
+            if dt_raw is None and hasattr(gl, "message_raw") and isinstance(gl.message_raw, dict):
+                dt_raw = gl.message_raw.get("datetime")
+            if dt_raw:
+                dt_str = str(dt_raw).strip().replace("Z", "+00:00")
+                dt = datetime.fromisoformat(dt_str)
+                ts = int(dt.timestamp())
+                if ts > 0:
+                    return bigint(ts)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(gl, "block") and hasattr(gl.block, "timestamp"):
+                ts = int(gl.block.timestamp)
+                if ts > 0:
+                    return bigint(ts)
+        except Exception:
+            pass
+
+        return bigint(0)
 
     def _parse_llm_json(self, text: str) -> dict:
         """Safely parse LLM responses, stripping markdown wrappers if present."""
@@ -88,10 +115,15 @@ class Contract(gl.Contract):
             }
 
     @gl.public.write.payable
-    def create_job(self, freelancer: Address, definition_of_done: str) -> str:
+    def create_job(
+        self,
+        freelancer: Address,
+        definition_of_done: str,
+        deadline_timestamp: int,
+    ) -> str:
         """
         Client creates a freelance milestone contract, locks GEN into escrow,
-        and defines acceptance criteria in natural language.
+        defines acceptance criteria in natural language, and sets an expiration deadline.
         """
         deposit = bigint(gl.message.value)
         if deposit <= bigint(0):
@@ -105,6 +137,14 @@ class Contract(gl.Contract):
         freelancer_hex = _addr_str(freelancer)
         if sender_hex == freelancer_hex:
             raise gl.UserError("Client cannot assign job to self.")
+
+        dl = bigint(deadline_timestamp)
+        if dl <= bigint(0):
+            raise gl.UserError("deadline_timestamp must be greater than 0.")
+
+        now_ts = self._get_current_timestamp()
+        if now_ts > bigint(0) and dl <= now_ts:
+            raise gl.UserError("deadline_timestamp must be set in the future.")
 
         self.job_count += bigint(1)
         jid = str(self.job_count)
@@ -122,6 +162,7 @@ class Contract(gl.Contract):
             freelancer_payout=bigint(0),
             client_refund=bigint(0),
             reason="Escrow locked. Waiting for freelancer submission.",
+            deadline=dl,
             created_at=self.job_count,
             resolved_at=bigint(0)
         )
@@ -131,7 +172,7 @@ class Contract(gl.Contract):
     @gl.public.write
     def submit_deliverable(self, job_id: str, deliverable_url: str) -> None:
         """
-        Freelancer submits the proof or public URL of the completed deliverable.
+        Freelancer submits the proof or public URL of the completed deliverable before deadline.
         """
         if job_id not in self.jobs:
             raise gl.UserError("Job contract not found.")
@@ -142,6 +183,12 @@ class Contract(gl.Contract):
 
         if job.status == "SETTLED":
             raise gl.UserError("Job is already settled.")
+        if job.status == "CANCELLED":
+            raise gl.UserError("Job has been cancelled.")
+
+        now_ts = self._get_current_timestamp()
+        if now_ts > bigint(0) and now_ts > job.deadline:
+            raise gl.UserError("Job deadline has passed; deliverable cannot be submitted.")
 
         clean_url = deliverable_url.strip()
         if not clean_url.startswith("http://") and not clean_url.startswith("https://"):
@@ -150,6 +197,46 @@ class Contract(gl.Contract):
         job.deliverable_url = clean_url
         job.status = "SUBMITTED"
         self.jobs[job_id] = job
+
+    @gl.public.write
+    def cancel_expired_job(self, job_id: str) -> None:
+        """
+        Safe Client Recovery Path:
+        If the freelancer fails to submit a deliverable before the deadline,
+        the client can cancel the funded job and recover a 100% full refund.
+        """
+        if job_id not in self.jobs:
+            raise gl.UserError("Job contract not found.")
+
+        job = self.jobs[job_id]
+        if _addr_str(_get_sender()) != _addr_str(job.client):
+            raise gl.UserError("Only the client can cancel an unsubmitted job.")
+
+        if job.status == "SETTLED":
+            raise gl.UserError("Job is already settled.")
+        if job.status == "CANCELLED":
+            raise gl.UserError("Job is already cancelled.")
+        if job.status == "SUBMITTED":
+            raise gl.UserError("Cannot cancel job once deliverable has been submitted.")
+
+        now_ts = self._get_current_timestamp()
+        if now_ts > bigint(0) and now_ts <= job.deadline:
+            raise gl.UserError("Job deadline has not passed yet.")
+
+        refund_amount = job.escrow_amount
+
+        job.status = "CANCELLED"
+        job.payout_tier = "CANCELLED"
+        job.completion_percentage = bigint(0)
+        job.freelancer_payout = bigint(0)
+        job.client_refund = refund_amount
+        job.reason = "Job cancelled by client after deadline expired without freelancer submission."
+        job.resolved_at = self.job_count
+        self.jobs[job_id] = job
+
+        # Full 100% refund disbursed back to client
+        if refund_amount > bigint(0):
+            _safe_transfer(job.client, refund_amount)
 
     @gl.public.write
     def adjudicate_job(self, job_id: str) -> None:
@@ -161,6 +248,8 @@ class Contract(gl.Contract):
             raise gl.UserError("Job contract not found.")
 
         job = self.jobs[job_id]
+        if job.status == "CANCELLED":
+            raise gl.UserError("Cannot adjudicate a cancelled job.")
         if job.status != "SUBMITTED":
             raise gl.UserError("Job deliverable has not been submitted or already settled.")
 
@@ -331,6 +420,11 @@ Respond ONLY with a VALID JSON object (no markdown, no backticks):
             _safe_transfer(job.client, client_refund)
 
     @gl.public.view
+    def get_current_time(self) -> int:
+        """Retrieve current contract execution timestamp."""
+        return int(str(self._get_current_timestamp()))
+
+    @gl.public.view
     def get_job(self, job_id: str) -> str:
         """Retrieve details of a job milestone contract as a JSON string."""
         if job_id not in self.jobs:
@@ -349,6 +443,7 @@ Respond ONLY with a VALID JSON object (no markdown, no backticks):
             "freelancer_payout": str(j.freelancer_payout),
             "client_refund": str(j.client_refund),
             "reason": j.reason,
+            "deadline": str(j.deadline),
             "created_at": str(j.created_at),
             "resolved_at": str(j.resolved_at)
         })

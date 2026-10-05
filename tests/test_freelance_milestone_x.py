@@ -45,12 +45,13 @@ def test_initial_state(contract):
 
 
 def test_create_job_success(contract, direct_vm, direct_alice, direct_bob):
-    """Client creates an escrow job with funds and DoD."""
+    """Client creates an escrow job with funds, DoD, and deadline."""
     direct_vm.sender = direct_alice
     direct_vm.value = 10000
 
     dod = "Deploy Next.js dApp to Vercel with Metamask wallet connect and transaction history table."
-    job_id = contract.create_job(direct_bob, dod)
+    deadline = 2000000000
+    job_id = contract.create_job(direct_bob, dod, deadline)
 
     assert str(job_id) == "1"
     assert contract.get_job_count() == 1
@@ -67,6 +68,7 @@ def test_create_job_success(contract, direct_vm, direct_alice, direct_bob):
     assert job_data["completion_percentage"] == "0"
     assert job_data["freelancer_payout"] == "0"
     assert job_data["client_refund"] == "0"
+    assert job_data["deadline"] == str(deadline)
 
 
 def test_create_job_validation_errors(contract, direct_vm, direct_alice, direct_bob):
@@ -76,28 +78,33 @@ def test_create_job_validation_errors(contract, direct_vm, direct_alice, direct_
     # 1. Zero escrow deposit
     direct_vm.value = 0
     with pytest.raises(Exception) as exc:
-        contract.create_job(direct_bob, "Detailed acceptance criteria goes here.")
+        contract.create_job(direct_bob, "Detailed acceptance criteria goes here.", 2000000000)
     assert "Escrow funding must be greater than 0 GEN" in str(exc.value)
 
     # 2. Definition of Done too short (< 15 chars)
     direct_vm.value = 5000
     with pytest.raises(Exception) as exc:
-        contract.create_job(direct_bob, "Do work")
+        contract.create_job(direct_bob, "Do work", 2000000000)
     assert "definition_of_done must be detailed (min 15 chars)" in str(exc.value)
 
     # 3. Client cannot assign job to self
     direct_vm.value = 5000
     with pytest.raises(Exception) as exc:
-        contract.create_job(direct_alice, "Build high frequency arbitrage trading bot on GenLayer.")
+        contract.create_job(direct_alice, "Build high frequency arbitrage trading bot on GenLayer.", 2000000000)
     assert "Client cannot assign job to self" in str(exc.value)
+
+    # 4. Zero or non-positive deadline
+    with pytest.raises(Exception) as exc:
+        contract.create_job(direct_bob, "Detailed acceptance criteria goes here.", 0)
+    assert "deadline_timestamp must be greater than 0" in str(exc.value)
 
 
 def test_submit_deliverable_success(contract, direct_vm, direct_alice, direct_bob):
-    """Freelancer submits deliverable URL."""
+    """Freelancer submits deliverable URL before deadline."""
     direct_vm.sender = direct_alice
     direct_vm.value = 8000
     dod = "Complete responsive landing page with Figma pixel-perfect fidelity."
-    job_id = contract.create_job(direct_bob, dod)
+    job_id = contract.create_job(direct_bob, dod, 2000000000)
 
     # Freelancer submits deliverable
     direct_vm.sender = direct_bob
@@ -113,7 +120,7 @@ def test_submit_deliverable_permissions_and_validations(contract, direct_vm, dir
     """Verify unauthorized users or invalid URLs are rejected."""
     direct_vm.sender = direct_alice
     direct_vm.value = 5000
-    job_id = contract.create_job(direct_bob, "Implement smart escrow with partial settlement.")
+    job_id = contract.create_job(direct_bob, "Implement smart escrow with partial settlement.", 2000000000)
 
     # 1. Non-existent job
     direct_vm.sender = direct_bob
@@ -149,7 +156,7 @@ def test_adjudicate_full_completion_tier(contract, direct_vm, direct_alice, dire
     direct_vm.sender = direct_alice
     direct_vm.value = 10000
     dod = "Deploy smart escrow dApp on Vercel with wallet connection, contract creation form, and audit summary."
-    job_id = contract.create_job(direct_bob, dod)
+    job_id = contract.create_job(direct_bob, dod, 2000000000)
 
     direct_vm.sender = direct_bob
     deliverable_url = "https://milestonex-preview.vercel.app"
@@ -200,7 +207,7 @@ def test_adjudicate_substantial_completion_tier(contract, direct_vm, direct_alic
     direct_vm.sender = direct_alice
     direct_vm.value = 10000
     dod = "Build landing page with hero section, pricing table, mobile responsive layout, and dark mode toggle."
-    job_id = contract.create_job(direct_bob, dod)
+    job_id = contract.create_job(direct_bob, dod, 2000000000)
 
     direct_vm.sender = direct_bob
     deliverable_url = "https://landing-page-milestone.vercel.app"
@@ -253,7 +260,7 @@ def test_adjudicate_partial_completion_tier(contract, direct_vm, direct_alice, d
     direct_vm.sender = direct_alice
     direct_vm.value = 10000
     dod = "Develop user authentication, dashboard analytics, and CSV report export."
-    job_id = contract.create_job(direct_bob, dod)
+    job_id = contract.create_job(direct_bob, dod, 2000000000)
 
     direct_vm.sender = direct_bob
     deliverable_url = "https://analytics-dashboard-demo.vercel.app"
@@ -294,7 +301,7 @@ def test_adjudicate_minimal_completion_tier(contract, direct_vm, direct_alice, d
     direct_vm.sender = direct_alice
     direct_vm.value = 10000
     dod = "Build complete fullstack e-commerce store with catalog, cart, and payment checkout."
-    job_id = contract.create_job(direct_bob, dod)
+    job_id = contract.create_job(direct_bob, dod, 2000000000)
 
     direct_vm.sender = direct_bob
     deliverable_url = "https://shop-prototype.vercel.app"
@@ -335,13 +342,12 @@ def test_adjudicate_inaccessible_or_404_url(contract, direct_vm, direct_alice, d
     direct_vm.sender = direct_alice
     direct_vm.value = 10000
     dod = "Deploy production e-commerce backend API with PostgreSQL and stripe webhooks."
-    job_id = contract.create_job(direct_bob, dod)
+    job_id = contract.create_job(direct_bob, dod, 2000000000)
 
     direct_vm.sender = direct_bob
     deliverable_url = "https://broken-or-offline-domain.com/api"
     contract.submit_deliverable(job_id, deliverable_url)
 
-    # Mock 404 response
     direct_vm.mock_web("broken-or-offline-domain.com/api", {"status": 404, "body": "404 Not Found"})
 
     contract.adjudicate_job(job_id)
@@ -362,7 +368,7 @@ def test_cannot_adjudicate_unsubmitted_or_settled_job(contract, direct_vm, direc
     """Verify adjudication guardrails prevent early execution or double spending."""
     direct_vm.sender = direct_alice
     direct_vm.value = 5000
-    job_id = contract.create_job(direct_bob, "Write unit tests covering 90% code coverage for auth service.")
+    job_id = contract.create_job(direct_bob, "Write unit tests covering 90% code coverage for auth service.", 2000000000)
 
     # 1. Attempt to adjudicate while status is still CREATED (no deliverable submitted)
     with pytest.raises(Exception) as exc:
@@ -404,7 +410,7 @@ def test_adjudicate_unrelated_submission_zero_percent(contract, direct_vm, direc
     direct_vm.sender = direct_alice
     direct_vm.value = 15000
     dod = "Implement Uniswap v3 automated swap routing with slippage protection."
-    job_id = contract.create_job(direct_bob, dod)
+    job_id = contract.create_job(direct_bob, dod, 2000000000)
 
     direct_vm.sender = direct_bob
     deliverable_url = "https://my-unrelated-cooking-blog.com"
@@ -439,12 +445,12 @@ def test_multiple_concurrent_jobs(contract, direct_vm, direct_alice, direct_bob,
     # Job 1: Alice hires Bob for 8,000 GEN
     direct_vm.sender = direct_alice
     direct_vm.value = 8000
-    j1 = contract.create_job(direct_bob, "Build frontend UI components in Tailwind CSS.")
+    j1 = contract.create_job(direct_bob, "Build frontend UI components in Tailwind CSS.", 2000000000)
 
     # Job 2: Alice hires Charlie for 12,000 GEN
     direct_vm.sender = direct_alice
     direct_vm.value = 12000
-    j2 = contract.create_job(direct_charlie, "Implement backend database migrations in PostgreSQL.")
+    j2 = contract.create_job(direct_charlie, "Implement backend database migrations in PostgreSQL.", 2000000000)
 
     assert contract.get_job_count() == 2
     assert j1 == "1"
@@ -491,12 +497,11 @@ def test_consensus_rejects_divergent_payout_tiers(contract, direct_vm, direct_al
     ECONOMIC DETERMINISM TEST:
     Demonstrates that if Leader proposes FULL (100%) but a Validator evaluates
     SUBSTANTIAL (75%), consensus REJECTS the leader proposal.
-    Materially different payouts CANNOT pass consensus!
     """
     direct_vm.sender = direct_alice
     direct_vm.value = 10000
     dod = "Build responsive web3 landing page with wallet connect button."
-    job_id = contract.create_job(direct_bob, dod)
+    job_id = contract.create_job(direct_bob, dod, 2000000000)
 
     direct_vm.sender = direct_bob
     deliverable_url = "https://milestone-test-consensus.vercel.app"
@@ -504,16 +509,171 @@ def test_consensus_rejects_divergent_payout_tiers(contract, direct_vm, direct_al
 
     direct_vm.mock_web("milestone-test-consensus.vercel.app", {"status": 200, "body": "Page live with partial buttons"})
 
-    # Clear validators captured list
     direct_vm.clear_validators()
 
     # Leader evaluates SUBSTANTIAL
     direct_vm.mock_llm(".*", json.dumps({"tier": "SUBSTANTIAL", "confidence": 90, "reason": "Partial items delivered"}))
     contract.adjudicate_job(job_id)
 
-    # Now verify validator logic:
-    # If a divergent leader proposal had proposed FULL, validator returns False!
     from genlayer.gl.vm import Return
     divergent_leader_proposal = Return(calldata={"tier": "FULL", "confidence": 95, "reason": "Proposed full"})
     is_valid = direct_vm.run_validator(index=0, leader_result=divergent_leader_proposal.calldata)
     assert is_valid is False, "Validator must reject leader proposal with divergent payout tier!"
+
+
+# ==============================================================================
+# SAFE CLIENT RECOVERY PATH TESTS (DEADLINE EXPIRATION & FULL REFUND)
+# ==============================================================================
+
+def test_cancel_expired_job_success_full_refund(contract, direct_vm, direct_alice, direct_bob):
+    """
+    Client Recovery Path:
+    Client funds a job with 10,000 GEN. Freelancer ghosts and never submits deliverable.
+    Deadline passes. Client calls cancel_expired_job and recovers a 100% full refund.
+    """
+    setup_post_message_hook(direct_vm)
+
+    alice_bytes = direct_vm._to_bytes(direct_alice)
+    direct_vm._balances[alice_bytes] = 0
+
+    # Start at 2026-06-01 10:00:00 UTC (timestamp 1780308000)
+    direct_vm.warp("2026-06-01T10:00:00Z")
+    now_ts = contract.get_current_time()
+    deadline = now_ts + 7200  # 2 hour deadline
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = 10000
+    job_id = contract.create_job(direct_bob, "Deploy fullstack application to production AWS cluster.", deadline)
+    direct_vm.value = 0
+
+    # Advance time 3 hours into future (past deadline)
+    direct_vm.warp("2026-06-01T13:00:00Z")
+    assert contract.get_current_time() > deadline
+
+    # Client cancels expired job
+    contract.cancel_expired_job(job_id)
+
+    job_data = json.loads(contract.get_job(job_id))
+    assert job_data["status"] == "CANCELLED"
+    assert job_data["payout_tier"] == "CANCELLED"
+    assert job_data["completion_percentage"] == "0"
+    assert job_data["freelancer_payout"] == "0"
+    assert job_data["client_refund"] == "10000"
+    assert "Job cancelled by client after deadline expired" in job_data["reason"]
+
+    # Client recovers 100% of escrow funds
+    assert direct_vm._balances[alice_bytes] == 10000
+
+
+def test_cancel_expired_job_before_deadline_fails(contract, direct_vm, direct_alice, direct_bob):
+    """Client cannot cancel a job before the deadline has expired."""
+    direct_vm.warp("2026-06-01T10:00:00Z")
+    now_ts = contract.get_current_time()
+    deadline = now_ts + 7200  # 2 hours
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = 5000
+    job_id = contract.create_job(direct_bob, "Create marketing materials and Figma assets.", deadline)
+
+    # Warp only 30 minutes forward (still before deadline)
+    direct_vm.warp("2026-06-01T10:30:00Z")
+    with pytest.raises(Exception) as exc:
+        contract.cancel_expired_job(job_id)
+    assert "Job deadline has not passed yet" in str(exc.value)
+
+
+def test_cancel_expired_job_by_non_client_fails(contract, direct_vm, direct_alice, direct_bob, direct_charlie):
+    """Non-clients (freelancer, stranger) cannot cancel an unsubmitted job."""
+    direct_vm.warp("2026-06-01T10:00:00Z")
+    now_ts = contract.get_current_time()
+    deadline = now_ts + 3600
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = 5000
+    job_id = contract.create_job(direct_bob, "Create marketing materials and Figma assets.", deadline)
+
+    # Warp past deadline
+    direct_vm.warp("2026-06-01T12:00:00Z")
+
+    # Bob (freelancer) attempts to cancel
+    direct_vm.sender = direct_bob
+    with pytest.raises(Exception) as exc:
+        contract.cancel_expired_job(job_id)
+    assert "Only the client can cancel an unsubmitted job" in str(exc.value)
+
+    # Charlie (third party) attempts to cancel
+    direct_vm.sender = direct_charlie
+    with pytest.raises(Exception) as exc:
+        contract.cancel_expired_job(job_id)
+    assert "Only the client can cancel an unsubmitted job" in str(exc.value)
+
+
+def test_cannot_cancel_submitted_or_settled_job(contract, direct_vm, direct_alice, direct_bob):
+    """Client cannot cancel a job once deliverable has been submitted."""
+    direct_vm.warp("2026-06-01T10:00:00Z")
+    now_ts = contract.get_current_time()
+    deadline = now_ts + 7200
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = 5000
+    job_id = contract.create_job(direct_bob, "Create marketing materials and Figma assets.", deadline)
+
+    # Freelancer submits deliverable on time
+    direct_vm.sender = direct_bob
+    contract.submit_deliverable(job_id, "https://figma.com/file/my-design-assets")
+
+    # Warp past deadline
+    direct_vm.warp("2026-06-01T14:00:00Z")
+
+    # Client attempts to cancel after submission
+    direct_vm.sender = direct_alice
+    with pytest.raises(Exception) as exc:
+        contract.cancel_expired_job(job_id)
+    assert "Cannot cancel job once deliverable has been submitted" in str(exc.value)
+
+
+def test_cannot_submit_after_deadline_or_cancellation(contract, direct_vm, direct_alice, direct_bob):
+    """Freelancer cannot submit a deliverable after the deadline has passed or job is cancelled."""
+    direct_vm.warp("2026-06-01T10:00:00Z")
+    now_ts = contract.get_current_time()
+    deadline = now_ts + 3600
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = 6000
+    job_id = contract.create_job(direct_bob, "Build custom smart contract staking mechanism.", deadline)
+
+    # Advance time past deadline
+    direct_vm.warp("2026-06-01T11:30:00Z")
+
+    # Freelancer attempts late submission
+    direct_vm.sender = direct_bob
+    with pytest.raises(Exception) as exc:
+        contract.submit_deliverable(job_id, "https://github.com/org/late-submission")
+    assert "Job deadline has passed; deliverable cannot be submitted" in str(exc.value)
+
+    # Client cancels job
+    direct_vm.sender = direct_alice
+    contract.cancel_expired_job(job_id)
+
+    # Freelancer attempts submission after cancellation
+    direct_vm.sender = direct_bob
+    with pytest.raises(Exception) as exc:
+        contract.submit_deliverable(job_id, "https://github.com/org/late-submission")
+    assert "Job has been cancelled" in str(exc.value)
+
+
+def test_cannot_adjudicate_cancelled_job(contract, direct_vm, direct_alice, direct_bob):
+    """Adjudication cannot be executed on a cancelled job."""
+    direct_vm.warp("2026-06-01T10:00:00Z")
+    deadline = contract.get_current_time() + 3600
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = 5000
+    job_id = contract.create_job(direct_bob, "Build responsive landing page for protocol launch.", deadline)
+
+    direct_vm.warp("2026-06-01T12:00:00Z")
+    contract.cancel_expired_job(job_id)
+
+    with pytest.raises(Exception) as exc:
+        contract.adjudicate_job(job_id)
+    assert "Cannot adjudicate a cancelled job" in str(exc.value)
